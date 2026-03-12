@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Dash AI</title>
+    <style>
+        body { margin: 0; background: #0a0a0a; color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { border: 2px solid #333; box-shadow: 0 0 20px rgba(0, 255, 255, 0.2); cursor: none; }
+        #ui { position: absolute; top: 20px; left: 20px; pointer-events: none; }
+        #msg { position: absolute; text-align: center; width: 100%; top: 50%; transform: translateY(-50%); font-size: 2rem; text-shadow: 0 0 10px cyan; }
+    </style>
+</head>
+<body>
+    <div id="ui">Score: <span id="score">0</span></div>
+    <div id="msg">Click to Start</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const msgEl = document.getElementById('msg');
+
+        // Game State
+        let gameActive = false;
+        let score = 0;
+        let particles = [];
+        let enemies = [];
+        let screenShake = 0;
+
+        // Player Object
+        const player = { x: 0, y: 0, size: 15, color: '#00ffff' };
+
+        // Resize Canvas
+        function resize() {
+            canvas.width = window.innerWidth * 0.8;
+            canvas.height = window.innerHeight * 0.8;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Audio Engine (Synthesized sounds)
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        function playSound(freq, type, duration) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+            osc.start();
+            osc.stop(audioCtx.currentTime + duration);
+        }
+
+        // Interaction
+        window.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            player.x = e.clientX - rect.left;
+            player.y = e.clientY - rect.top;
+        });
+
+        canvas.addEventListener('click', () => {
+            if (!gameActive) {
+                resetGame();
+                gameActive = true;
+                msgEl.style.display = 'none';
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                playSound(440, 'sine', 0.5);
+            }
+        });
+
+        function resetGame() {
+            score = 0;
+            enemies = [];
+            particles = [];
+            scoreEl.innerText = score;
+        }
+
+        class Enemy {
+            constructor() {
+                this.size = Math.random() * 20 + 10;
+                this.reset();
+            }
+            reset() {
+                const side = Math.floor(Math.random() * 4);
+                if (side === 0) { this.x = -50; this.y = Math.random() * canvas.height; } // Left
+                if (side === 1) { this.x = canvas.width + 50; this.y = Math.random() * canvas.height; } // Right
+                if (side === 2) { this.x = Math.random() * canvas.width; this.y = -50; } // Top
+                if (side === 3) { this.x = Math.random() * canvas.width; this.y = canvas.height + 50; } // Bottom
+                
+                const speed = 2 + (score / 10);
+                const angle = Math.atan2(player.y - this.y, player.x - this.x);
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                // Collision check
+                const dx = this.x - player.x;
+                const dy = this.y - player.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                if (dist < this.size + player.size) {
+                    gameOver();
+                }
+
+                // Offscreen check
+                if (this.x < -100 || this.x > canvas.width + 100 || this.y < -100 || this.y > canvas.height + 100) {
+                    this.reset();
+                    score++;
+                    scoreEl.innerText = score;
+                    playSound(150 + (score * 10), 'triangle', 0.1);
+                }
+            }
+            draw() {
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = '#ff0055';
+                ctx.fillStyle = '#ff0055';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function gameOver() {
+            gameActive = false;
+            msgEl.style.display = 'block';
+            msgEl.innerHTML = `GAME OVER<br>Score: ${score}<br>Click to Restart`;
+            playSound(100, 'sawtooth', 0.8);
+            screenShake = 20;
+        }
+
+        function animate() {
+            ctx.fillStyle = 'rgba(10, 10, 10, 0.2)'; // Trail effect
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (screenShake > 0) {
+                ctx.save();
+                ctx.translate(Math.random() * screenShake, Math.random() * screenShake);
+                screenShake *= 0.9;
+            }
+
+            if (gameActive) {
+                // Spawn logic
+                if (enemies.length < 5 + Math.floor(score/15)) {
+                    enemies.push(new Enemy());
+                }
+
+                enemies.forEach(en => {
+                    en.update();
+                    en.draw();
+                });
+
+                // Draw Player
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = player.color;
+                ctx.fillStyle = player.color;
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, player.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            if (screenShake > 0) ctx.restore();
+            requestAnimationFrame(animate);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
