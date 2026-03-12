@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CYBER-SURVIVOR</title>
+    <style>
+        body { margin: 0; background-color: #050505; color: #fff; font-family: 'Consolas', monospace; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { border: 4px solid #333; box-shadow: 0 0 30px rgba(0, 255, 255, 0.1); cursor: crosshair; }
+        #ui { position: absolute; padding: 20px; pointer-events: none; width: 100%; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; }
+        .stat-box { background: rgba(0, 0, 0, 0.7); padding: 10px; border: 1px solid cyan; box-shadow: 0 0 10px rgba(0, 255, 255, 0.3); }
+        .health-bar { width: 200px; height: 15px; background: #333; border: 1px solid #ff4444; position: relative; }
+        #health-fill { height: 100%; background: #ff4444; width: 100%; transition: width 0.2s; box-shadow: 0 0 10px #ff4444; }
+        #overlay { position: absolute; text-align: center; width: 100%; top: 50%; transform: translateY(-50%); }
+        #overlayh1 { font-size: 3rem; color: cyan; text-shadow: 0 0 15px cyan; margin: 0; }
+        .cyan { color: cyan; } .red { color: #ff4444; } .xp { color: #ffe000; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div style="display: flex; justify-content: space-between;">
+            <div class="stat-box">SURVIVAL TIME: <span id="time" class="cyan">0s</span></div>
+            <div class="stat-box xp">WEAPON LVL: <span id="wpn-lvl">1</span></div>
+        </div>
+        <div class="stat-box" style="width: fit-content;">
+            <div style="margin-bottom: 5px;">HULL INTEGRITY:</div>
+            <div class="health-bar"><div id="health-fill"></div></div>
+        </div>
+    </div>
+    <div id="overlay">
+        <h1 id="overlayh1">CYBER_SURVIVOR</h1>
+        <p class="cyan">WASD to Move | Mouse to Aim & Shoot</p>
+        <p>Click anywhere to activate system</p>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const uiTime = document.getElementById('time');
+        const uiHealth = document.getElementById('health-fill');
+        const uiWpn = document.getElementById('wpn-lvl');
+        const overlay = document.getElementById('overlay');
+        const overlayH1 = document.getElementById('overlayh1');
+
+        canvas.width = window.innerWidth * 0.9;
+        canvas.height = window.innerHeight * 0.9;
+
+        // --- Audio Engine (Synthesized) ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSfx(type) {
+            if (audioCtx.state === 'suspended') return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+
+            if (type === 'shoot') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.1);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+            } else if (type === 'kill') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(100 + Math.random() * 50, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.05);
+            } else if (type === 'damage') {
+                osc.type = 'sine'; osc.frequency.setValueAtTime(60, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+            } else if (type === 'powerup') {
+                osc.type = 'square';
+                const now = audioCtx.currentTime;
+                [200, 300, 400, 500].forEach((f, i) => {
+                    osc.frequency.setValueAtTime(f, now + i * 0.05);
+                });
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+                osc.start(); osc.stop(now + 0.25);
+            }
+        }
+
+        // --- Game Objects & State ---
+        let game = { active: false, time: 0, frame: 0, enemiesSpawned: 0 };
+        let player = { x: canvas.width/2, y: canvas.height/2, speed: 4, size: 10, health: 100, wpnLvl: 1 };
+        let keys = { w: false, a: false, s: false, d: false };
+        let mouse = { x: 0, y: 0, down: false };
+        let bullets = [], enemies = [], particles = [], powerups = [];
+
+        // Interaction Listeners
+        window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+        window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+        window.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left; mouse.y = e.clientY - rect.top;
+        });
+        window.addEventListener('mousedown', () => {
+            if (!game.active && player.health > 0) startGame();
+            if (game.active && player.health <= 0) resetGame();
+            mouse.down = true;
+        });
+        window.addEventListener('mouseup', () => mouse.down = false);
+
+        function startGame() {
+            audioCtx.resume(); game.active = true; overlay.style.display = 'none'; game.time = 0;
+        }
+
+        function resetGame() {
+            game.active = false; game.time = 0; game.frame = 0; game.enemiesSpawned = 0;
+            player = { x: canvas.width/2, y: canvas.height/2, speed: 4, size: 10, health: 100, wpnLvl: 1 };
+            bullets = []; enemies = []; particles = []; powerups = [];
+            uiWpn.innerText = player.wpnLvl; uiHealth.style.width = '100%';
+            overlay.style.display = 'block'; overlayH1.innerText = "CYBER_SURVIVOR";
+        }
+
+        // --- Classes ---
+        class Bullet {
+            constructor(x, y, angle, speed, color = 'cyan') {
+                this.x = x; this.y = y; this.vx = Math.cos(angle) * speed; this.vy = Math.sin(angle) * speed;
+                this.size = 3; this.color = color; this.alive = true;
+            }
+            update() {
+                this.x += this.vx; this.y += this.vy;
+                if (this.x < 0 || this.x > canvas.width || this.y < 0 || this.y > canvas.height) this.alive = false;
+            }
+            draw() {
+                ctx.fillStyle = this.color; ctx.shadowBlur = 10; ctx.shadowColor = this.color;
+                ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+            }
+        }
+
+        class Enemy {
+            constructor() {
+                this.size = 8 + Math.random() * 6;
+                this.speed = 1 + (game.time / 60); // Get faster over time
+                if (Math.random() < 0.5) {
+                    this.x = Math.random() < 0.5 ? -20 : canvas.width + 20; this.y = Math.random() * canvas.height;
+                } else {
+                    this.x = Math.random() * canvas.width; this.y = Math.random() < 0.5 ? -20 : canvas.height + 20;
+                }
+                this.health = 2 + Math.floor(game.time/30); this.color = `hsl(${340 + Math.random()*30}, 100%, 60%)`;
+                this.alive = true;
+            }
+            update() {
+                let angle = Math.atan2(player.y - this.y, player.x - this.x);
+                this.x += Math.cos(angle) * this.speed; this.y += Math.sin(angle) * this.speed;
+                // Collision with player
+                let dist = Math.hypot(this.x - player.x, this.y - player.y);
+                if (dist < this.size + player.size) {
+                    player.health -= 0.5; // Do continuous damage
+                    playSfx('damage');
+                    this.health -= 0.2; // Enemy takes damage too on contact
+                }
+                if (this.health <= 0) this.alive = false;
+            }
+            draw() {
+                ctx.fillStyle = this.color; ctx.shadowBlur = 10; ctx.shadowColor = this.color;
+                ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+            }
+        }
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x; this.y = y; this.color = color;
+                this.vx = (Math.random() - 0.5) * 5; this.vy = (Math.random() - 0.5) * 5;
+                this.life = 30; this.size = Math.random() * 3 + 1;
+            }
+            update() { this.x += this.vx; this.y += this.vy; this.life--; this.size *= 0.95; }
+            draw() { ctx.fillStyle = `rgba(${this.color.match(/\d+/g).slice(0,3).join(',')}, ${this.life/30})`; ctx.shadowBlur=0; ctx.fillRect(this.x, this.y, this.size, this.size); }
+        }
+
+        class PowerUp {
+            constructor(x, y) { this.x = x; this.y = y; this.size = 12; this.alive = true; this.frame = 0;}
+            update() {
+                this.frame++;
+                if (Math.hypot(this.x - player.x, this.y - player.y) < this.size + player.size) {
+                    player.wpnLvl = Math.min(player.wpnLvl + 1, 5);
+                    uiWpn.innerText = player.wpnLvl; playSfx('powerup'); this.alive = false;
+                    for(let i=0; i<10; i++) particles.push(new Particle(this.x, this.y, '255, 255, 0'));
+                }
+            }
+            draw() {
+                ctx.fillStyle = '#ffe000'; ctx.shadowBlur = 15 + Math.sin(this.frame/5)*5; ctx.shadowColor = '#ffe000';
+                ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+            }
+        }
+
+        // --- Core Loops ---
+        function fireWeapon() {
+            let angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+            let speed = 10;
+            if (player.wpnLvl === 1) bullets.push(new Bullet(player.x, player.y, angle, speed));
+            if (player.wpnLvl === 2) { 
+                bullets.push(new Bullet(player.x, player.y, angle - 0.1, speed)); 
+                bullets.push(new Bullet(player.x, player.y, angle + 0.1, speed)); 
+            }
+            if (player.wpnLvl >= 3) {
+                for (let i = -1; i <= 1; i++) bullets.push(new Bullet(player.x, player.y, angle + i * 0.2, speed));
+            }
+            if (player.wpnLvl >= 4 && game.frame % 10 === 0) { // Add rear fire
+                bullets.push(new Bullet(player.x, player.y, angle + Math.PI, speed * 0.8, '#ffcc00'));
+            }
+            if (player.wpnLvl >= 5 && game.frame % 15 === 0) { // Side fire
+                bullets.push(new Bullet(player.x, player.y, angle + Math.PI/2, speed * 0.8, '#ffcc00'));
+                bullets.push(new Bullet(player.x, player.y, angle - Math.PI/2, speed * 0.8, '#ffcc00'));
+            }
+            playSfx('shoot');
+        }
+
+        function animate() {
+            game.frame++;
+            if (game.active) {
+                ctx.fillStyle = 'rgba(10, 10, 10, 0.3)'; // Trail effect
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.shadowBlur = 0; // Reset blur for clear drawing
+
+                // Update UI
+                if (game.frame % 60 === 0) { game.time++; uiTime.innerText = game.time + "s"; }
+                uiHealth.style.width = player.health + '%';
+
+                // Player Move
+                if (keys.w && player.y > 0) player.y -= player.speed;
+                if (keys.s && player.y < canvas.height) player.y += player.speed;
+                if (keys.a && player.x > 0) player.x -= player.speed;
+                if (keys.d && player.x < canvas.width) player.x += player.speed;
+                
+                // Player Shooting
+                let fireRate = player.wpnLvl >= 3 ? 6 : 10;
+                if (mouse.down && game.frame % fireRate === 0) fireWeapon();
+
+                // Draw Player (with neon glow)
+                ctx.fillStyle = 'cyan'; ctx.shadowBlur = 20; ctx.shadowColor = 'cyan';
+                ctx.fillRect(player.x - player.size/2, player.y - player.size/2, player.size, player.size);
+
+                // Spawning
+                let spawnRate = Math.max(10, 60 - Math.floor(game.time / 10));
+                if (game.frame % spawnRate === 0) enemies.push(new Enemy());
+
+                // Update & Draw Objects
+                [bullets, enemies, particles, powerups].forEach((group, groupIdx) => {
+                    for (let i = group.length - 1; i >= 0; i--) {
+                        let obj = group[i]; obj.update(); obj.draw();
+                        
+                        // Interaction Logic
+                        if (groupIdx === 0) { // Bullets checking Enemies
+                            enemies.forEach(en => {
+                                if (Math.hypot(obj.x - en.x, obj.y - en.y) < en.size) {
+                                    en.health--; obj.alive = false;
+                                    for(let p=0; p<3; p++) particles.push(new Particle(en.x, en.y, en.color));
+                                }
+                            });
+                        }
+                        if (groupIdx === 1 && !obj.alive) { // Enemy Death Logic
+                            playSfx('kill');
+                            if (Math.random() < 0.05) powerups.push(new PowerUp(obj.x, obj.y)); // Spawn Powercore
+                        }
+                        
+                        if (!obj.alive || (obj.life && obj.life <= 0)) group.splice(i, 1);
+                    }
+                });
+
+                // Game Over
+                if (player.health <= 0) {
+                    game.active = false; overlay.style.display = 'block'; overlay.style.cursor='pointer';
+                    overlayH1.innerText = "SYSTEM FAILURE"; overlayH1.className = 'red';
+                    document.querySelector('#overlay p').innerText = `Survived: ${game.time}s | Wpn Lvl: ${player.wpnLvl}. Click to reboot.`;
+                }
+            } else if (player.health > 0) { // Background when game is paused/not started
+                ctx.fillStyle = '#050505'; ctx.fillRect(0,0, canvas.width, canvas.height);
+                ctx.fillStyle = 'cyan'; ctx.shadowBlur = 20; ctx.shadowColor = 'cyan';
+                ctx.fillRect(player.x - player.size/2, player.y - player.size/2, player.size, player.size);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        resetGame();
+        animate();
+    </script>
+</body>
+</html>
